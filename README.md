@@ -1,21 +1,34 @@
 # train-your-first-jev
 
+**English** | [简体中文](README.zh-CN.md)
+
 A local teaching repository with two paths: a quick CPU byte-scorer exercise and
-a Chinese interactive course that trains LoRA adapters plus a decision head on
-the open pretrained Qwen2.5-0.5B model. The latter uses actual CommonsenseQA questions,
+an interactive course that trains LoRA adapters plus a decision head on the open
+pretrained Qwen2.5-0.5B model. The latter uses actual CommonsenseQA questions,
 not synthetic badge matching. It is a Jev-like choice scorer, not official Jev.
 
 The pinned MIT `jevlike` source is extended locally; see [PROVENANCE.md](PROVENANCE.md).
 
-## 在线学习
+The interactive course ships in two languages: the online lessons are English by
+default, with a Chinese version, and the terminal walkthrough (`jev-course guide`)
+currently prints Chinese only.
 
-[打开九节交互课程](https://cexll.github.io/train-your-first-jev/)
+## Online lessons
 
-网页提供完整课文、逐课自测、温度滑块和本地学习进度，不需要登录。
-网页不会运行 Qwen 训练；真正的 LoRA 训练在自己的电脑上通过下方命令执行。
-站点源码为 `docs/index.html`，GitHub Pages 从 `main` 的 `/docs` 发布，无需前端构建。
+[Open the nine-lesson interactive course](https://cexll.github.io/train-your-first-jev/) —
+English by default. The Chinese version is at
+[index.zh-CN.html](https://cexll.github.io/train-your-first-jev/index.zh-CN.html);
+both pages carry the same nine lessons and exercises and share the same saved
+progress.
 
-## 交互式开源模型训练
+The pages carry the complete lesson text, a per-lesson self-check, a temperature
+slider and local learning progress; no login is needed.
+The pages do not run Qwen training; the real LoRA training runs on your own machine
+with the commands below.
+The site source is `docs/index.html` plus `docs/index.zh-CN.html`, and GitHub Pages
+publishes from `/docs` on `main`; there is no front-end build.
+
+## Interactive open-model training
 
 ```sh
 git clone https://github.com/cexll/train-your-first-jev.git
@@ -24,40 +37,53 @@ uv sync --locked
 uv run jev-course guide --out runs/my-jev --device mps
 ```
 
-每课解释一个步骤，显示真实命令，按回车执行，输入 `q` 退出。流程包括数据准备、
-训练、评估、独立温度校准和重载预测；最后可以输入自己的题目和候选答案。
-首次运行需要下载约 1 GB 的基座权重和公开题库。非空输出目录不会被覆盖。
-长步骤会等待子进程完成后展示输出，不是实时训练进度条。
+Each lesson explains one step, shows the real command, runs it when you press
+Enter, and quits on `q`. The flow covers data preparation, training, evaluation,
+separate temperature calibration and reload-and-predict; at the end you can type
+your own question and candidate answers.
+The first run downloads roughly 1 GB of base weights and the public question set.
+A non-empty output directory is never overwritten.
+Long steps wait for the subprocess to finish before showing its output; this is
+not a live training progress bar.
 
-训练更新 Qwen 注意力的 LoRA 参数及评分头，原始基座权重保持不变。
-固定基座：`Qwen/Qwen2.5-0.5B`，revision
-`060db6499f32faf8b98477b0a26969ef7d8b9987`（Apache-2.0）。
-`model.pt` 保存适配器和评分头，不包含基座；换机器需要重新下载该固定版本。
-数据来源为 [CommonsenseQA](https://www.tau-nlp.org/commonsenseqa)（MIT，来源与哈希
-由数据报告记录），使用英文题目，按概念分组重新划分，不能与官方排行榜直接比较。
+Training updates the LoRA parameters of Qwen's attention layers and the scoring
+head; the original base weights stay unchanged. Pinned base: `Qwen/Qwen2.5-0.5B`,
+revision `060db6499f32faf8b98477b0a26969ef7d8b9987` (Apache-2.0). `model.pt` stores
+the adapter and the scoring head, not the base; moving to another machine means
+downloading that pinned revision again. The data comes from
+[CommonsenseQA](https://www.tau-nlp.org/commonsenseqa) (MIT; source and hashes
+recorded in the data report), uses English questions, is re-split by concept group,
+and cannot be compared directly with the official leaderboard.
 
-本机 M1 Pro / MPS 实测：9,792 条训练题，512 条验证题，256 条校准题，
-256 条留出题。完整流水线的训练阶段耗时 2,686.37 秒（约 45 分钟），记录见
-`runs/lora-pipeline/logs/train.log`；耗时随机器负载变化。按验证损失选择第 2 轮：
-交互式课程的完整实跑另保存在 `runs/guide-acceptance/`，训练阶段为 2,991.43 秒
-（约 50 分钟），测试准确率同样为 47.66%。两次记录都是本机测量，不是速度保证。
-课程会显示三轮验证损失 1.4543、1.2903、1.4633 的参考例子，解释为何保存第 2 轮；
-本次执行的实际结果在每个步骤结束后单独显示。
+Measured on this machine (M1 Pro / MPS): 9,792 training questions, 512 validation
+questions, 256 calibration questions, 256 held-out questions. The training stage of
+the full pipeline took 2,686.37 seconds (about 45 minutes), recorded in
+`runs/lora-pipeline/logs/train.log`; the time varies with machine load. Epoch 2 is
+selected by validation loss: the complete interactive-course run is kept separately
+in `runs/guide-acceptance/`, where the training stage took 2,991.43 seconds (about
+50 minutes) and the test accuracy was also 47.66%. Both records are local
+measurements, not a speed guarantee. The course shows a reference example with the
+three epochs' validation losses 1.4543, 1.2903, 1.4633 to explain why epoch 2 is
+kept; the actual results of this run are shown separately after each step.
 
-| 对照 | 留出准确率 |
+| Control | Held-out accuracy |
 |---|---:|
-| 五个随机评分头中的最好结果 | 18.36% |
-| 冻结基座，2,048 条训练题 | 25.39% |
-| LoRA，2,048 条训练题 | 31.64% |
-| LoRA，9,792 条训练题 | 47.66%（122 / 256） |
-| 最后模型打乱上下文 | 14.84% |
+| Best of five random scoring heads | 18.36% |
+| Frozen base, 2,048 training questions | 25.39% |
+| LoRA, 2,048 training questions | 31.64% |
+| LoRA, 9,792 training questions | 47.66% (122 / 256) |
+| Final model with shuffled context | 14.84% |
 
-最后模型校准前后 NLL 为 1.2568 → 1.2476，ECE 为 0.0636 → 0.0378。
-本机证据在 `runs/lora-full/`，属于未纳入版本控制的运行产物。
-这些成绩是开发过程中反复检查过的留出集结果，不是独立盲测；预训练基座也可能
-见过公开题库。它们证明本次训练有学习信号，不证明通用能力、生产可靠性或与 Jev 等效。
+Calibration moved the final model's NLL from 1.2568 to 1.2476 and its ECE from
+0.0636 to 0.0378. The local evidence is in `runs/lora-full/`, which is an untracked
+run artefact.
+These are held-out results checked repeatedly during development, not an independent
+blind test; the pretrained base may also have seen the public question set. They show
+that this training produced a learning signal; they do not prove general capability,
+production reliability, or parity with Jev.
 
-下面的 CPU quickstart 保留为快速理解训练流程的字节模型练习，不能代替上述语义任务。
+The CPU quickstart below is kept as a byte-model exercise for understanding the
+training loop quickly; it cannot replace the semantic task above.
 
 ## Relationship to the Chinese walkthrough
 

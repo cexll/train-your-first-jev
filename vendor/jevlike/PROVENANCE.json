@@ -1,0 +1,131 @@
+{
+  "baseline": {
+    "note": "Copied from the fixed local mirror kept by the course author at jev-local/.vendor/jevlike, which holds the pinned revision above. pristine_sha256 is what this repository received before patching; compare it against a fresh checkout of the revision to confirm the baseline.",
+    "source_directory_hosted_by": "local mirror of the pinned revision (not published)"
+  },
+  "component": "jevlike",
+  "packaging": {
+    "entry_points": {
+      "data": "python -m jevlike.data",
+      "eval": "python -m jevlike.eval",
+      "predict": "python -m jevlike.predict",
+      "train": "python -m jevlike.train"
+    },
+    "not_vendored": [
+      "examples/",
+      "docs/",
+      "data/",
+      "runs/",
+      "scripts/",
+      "tests/",
+      "AGENTS.md",
+      "README.md"
+    ],
+    "pyproject_deltas": [
+      "dropped readme (no README vendored)",
+      "dropped dev and games extras and pytest configuration",
+      "dropped jevlike-data/-train/-eval/-predict console scripts (lessons use python -m)"
+    ]
+  },
+  "patches": [
+    {
+      "applies_to": [
+        "jevlike/model.py",
+        "jevlike/data.py",
+        "jevlike/eval.py",
+        "jevlike/train.py"
+      ],
+      "changes": [
+        {
+          "file": "jevlike/model.py",
+          "function": "trainable_state",
+          "summary": "parameter.detach().cpu() -> parameter.detach().cpu().clone(). On CPU the old expression returned the live tensor, so the saved 'best validation' snapshot was rewritten by later epochs and the checkpoint held the final epoch instead. Checked by 'jev-course check' (snapshot_is_independent)."
+        },
+        {
+          "file": "jevlike/model.py",
+          "function": "load_checkpoint",
+          "summary": "torch.load(..., weights_only=False) -> weights_only=True plus payload shape validation (dict, config dict, state_dict mapping names to tensors, required config keys). Untrusted pickles are refused instead of executed; the on-disk schema is unchanged."
+        },
+        {
+          "file": "jevlike/data.py",
+          "function": "synthetic_example",
+          "summary": "options = list(set) -> sorted(set). Set iteration order depends on PYTHONHASHSEED, so the same seed produced different option orders and labels in different processes. Checked by 'jev-course check' (generation_is_hash_seed_independent)."
+        },
+        {
+          "file": "jevlike/eval.py",
+          "function": "metrics",
+          "summary": "ECE bins were selected with 'lower <= p < lower + 0.1' against linspace boundaries, which never counted a confidence of exactly 1.0 and depended on float32 equality at the boundaries. Now bin index = floor(p * 10) clamped to [0, 9], so every row belongs to exactly one bin. top1/top3 are unaffected; only the 'ece' value changes."
+        },
+        {
+          "file": "jevlike/model.py",
+          "function": "FrozenTransformerScorer.__init__ and make_system",
+          "summary": "FrozenTransformerScorer gained an optional third argument, revision (default None), passed straight to AutoModel.from_pretrained. make_system reads config.get('hf_revision') and forwards it to both AutoTokenizer.from_pretrained and the scorer, so a pinned revision is used for the tokenizer and the encoder alike. .get() means a checkpoint written before this key existed still loads and resolves the hub default branch exactly as before; revision=None is the hub default branch."
+        },
+        {
+          "file": "jevlike/train.py",
+          "function": "main",
+          "summary": "New --hf-revision argument (default None). When given it is recorded in the checkpoint config as 'hf_revision' so a later load_checkpoint re-resolves the same commit instead of whatever the hub default branch points at; when omitted the config is byte-identical to the pre-change one. No training logic changes."
+        },
+        {
+          "file": "jevlike/model.py and jevlike/train.py",
+          "change": "Optional pinned LoRA q/v adapters plus head; strict adapter checkpoint completeness; two learning-rate groups and OneCycle for lora only."
+        },
+        {
+          "file": "jevlike/model.py",
+          "change": "LoRA reload requires40-character commit hf_revision; omitted/symbolic pins rejected, file contents not authenticated."
+        }
+      ],
+      "file": "patches/0001-course-fixes.diff",
+      "sha256": "81d5a5fb2239ea55af3b2b986bc63a0a516706d1770f3587149f56b7e7b05d4f",
+      "verified_with": "Main reconstructed unified patch against pristine_sha256-verified local mirror; runnable adapter acceptance recorded separately under runs/lora."
+    }
+  ],
+  "schema": 1,
+  "upstream": {
+    "authors": [
+      "Minimal Labs"
+    ],
+    "license": "MIT",
+    "license_file": "LICENSE",
+    "license_sha256": "f65840769b9385e6f04b4a91633ab812c8e9dadd4b0b888b1579e5f84bcb9308",
+    "repository": "https://github.com/vinnylarouge/jevlike",
+    "revision": "94f5fd1b0b11d52bbdfdf4e0ee6aa96b568f8452"
+  },
+  "vendored_files": {
+    "__init__.py": {
+      "changed": false,
+      "pristine_sha256": "0b0d268c89c223a5a6bf8fc2e4f9a9bdf446ef4d9f4c4a1f4fd89769d7f2418a",
+      "vendored_sha256": "0b0d268c89c223a5a6bf8fc2e4f9a9bdf446ef4d9f4c4a1f4fd89769d7f2418a"
+    },
+    "data.py": {
+      "changed": true,
+      "pristine_sha256": "801cc11a29d96aa4854138451240d7f53637a092c2609ceee256cd62ae322788",
+      "vendored_sha256": "90ede87cc8272893d4d3c2d18d82a9cceaeda8c947f478383607fc85b9f92faa"
+    },
+    "eval.py": {
+      "changed": true,
+      "pristine_sha256": "b7d85c5d5072694037441da19c00484560ddd43591ccf5f5bf360a9ee7e5e44c",
+      "vendored_sha256": "a13f634105a58cb4553712a1a00ac77d17bead75bfb396fc5cbdba2cecc15b33"
+    },
+    "model.py": {
+      "changed": true,
+      "pristine_sha256": "a8eb880880f5da352bd554ea84909dd2ba27c645762d960cad057fe0bbfe0197",
+      "vendored_sha256": "7b8170bbcb9cfe42706f6a4043bdddd28a3d6578261bbf6d1081ba98759bf96c"
+    },
+    "predict.py": {
+      "changed": false,
+      "pristine_sha256": "72000c90d4574e45b82e40a48ea36f9341a94adb2a7a5b720166bf95a177ee73",
+      "vendored_sha256": "72000c90d4574e45b82e40a48ea36f9341a94adb2a7a5b720166bf95a177ee73"
+    },
+    "train.py": {
+      "changed": true,
+      "pristine_sha256": "b7956b90b2bb546f08ed24f0d93562fe40ed2e3373a58b9d3401773c56fa2c32",
+      "vendored_sha256": "c5e976c92cb24138a9fa7e5792e4a4d39a098028abb3edba1c2e2a673e61a44c"
+    },
+    "vision.py": {
+      "changed": false,
+      "pristine_sha256": "ff55fd21b37e630ca1002c2619bd3528c000e30c64b4cbd440bc54f74566aaf6",
+      "vendored_sha256": "ff55fd21b37e630ca1002c2619bd3528c000e30c64b4cbd440bc54f74566aaf6"
+    }
+  }
+}

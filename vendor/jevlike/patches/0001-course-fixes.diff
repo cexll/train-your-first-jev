@@ -1,0 +1,303 @@
+--- a/jevlike/data.py
++++ b/jevlike/data.py
+@@ -118,7 +118,10 @@
+     options = {target}
+     while len(options) < count:
+         options.add(f"{rng.choice(COLOURS)} {rng.choice(ANIMALS)}")
+-    options = list(options)
++    # sorted(), not list(): a set of strings iterates in hash order, which changes
++    # with PYTHONHASHSEED, so list(options) made the option order and every label
++    # differ between processes for the same seed. The set is unchanged otherwise.
++    options = sorted(options)
+     rng.shuffle(options)
+     notes = " ".join(rng.choice(("north", "south", "east", "west")) for _ in range(8))
+     context = f"Choose the exact badge {target}. Notes: {notes}. Badge: {target}."
+--- a/jevlike/eval.py
++++ b/jevlike/eval.py
+@@ -34,9 +34,13 @@
+     confidence, prediction, labels = map(
+         torch.cat, (confidences, predictions, labels)
+     )
++    # Fixed bin ownership: bin = floor(p * 10) clamped to [0, 9]. The upstream loop
++    # tested "lower <= p < lower + 0.1" against linspace boundaries, which dropped
++    # confidence exactly 1.0 and relied on float32 equality with those boundaries.
++    bins = (confidence * 10).floor().clamp(0, 9).long()
+     ece = 0.0
+-    for lower in torch.linspace(0, 0.9, 10):
+-        selected = (confidence >= lower) & (confidence < lower + 0.1)
++    for index in range(10):
++        selected = bins.eq(index)
+         if selected.any():
+             gap = prediction[selected].eq(labels[selected]).float().mean()
+             gap -= confidence[selected].mean()
+--- a/jevlike/model.py
++++ b/jevlike/model.py
+@@ -1,8 +1,9 @@
+-"""One-pass option scorers with tiny or frozen pretrained text encoders."""
++"""One-pass option scorers with tiny, frozen, or adapter-tuned pretrained encoders."""
+ 
+ from __future__ import annotations
+ 
+ import math
++from contextlib import AbstractContextManager, nullcontext
+ from pathlib import Path
+ 
+ import torch
+@@ -64,17 +65,58 @@
+ 
+ 
+ class FrozenTransformerScorer(nn.Module):
+-    def __init__(self, model_name: str, rank: int) -> None:
++    """Score options with a pretrained encoder that is frozen or adapter-tuned.
++
++    ``lora_rank=None`` (the upstream default) is the frozen route: the encoder is a
++    fixed feature extractor, forced into eval mode and ``torch.no_grad()`` on every
++    forward so a training loop can never reach it. Passing ``lora_rank`` is the
++    adapter route: PEFT injects LoRA adapters into ``q_proj``/``v_proj``, the
++    pretrained weights stay frozen, the adapters and the head are what trains, and
++    the encoder keeps whatever mode the caller set with ``train()``/``eval()``.
++    """
++
++    def __init__(
++        self, model_name: str, rank: int, revision: str | None = None,
++        lora_rank: int | None = None, lora_alpha: int = 32,
++    ) -> None:
+         super().__init__()
+         from transformers import AutoModel
+ 
+-        self.encoder = AutoModel.from_pretrained(model_name)
+-        self.encoder.requires_grad_(False).eval()
++        # revision=None keeps the hub default branch, so unpinned callers are unchanged.
++        self.encoder = AutoModel.from_pretrained(model_name, revision=revision)
++        # Frozen weights first: the adapters injected below are created afterwards and
++        # keep requires_grad=True, so they end up the encoder's only trainable ones.
++        self.encoder.requires_grad_(False)
++        self.encoder_frozen = lora_rank is None
++        if self.encoder_frozen:
++            self.encoder.eval()
++        else:
++            self._add_lora(lora_rank, lora_alpha)
+         self.head = AttentionHead(self.encoder.config.hidden_size, rank)
+ 
++    def _add_lora(self, lora_rank: int, lora_alpha: int) -> None:
++        from peft import LoraConfig, TaskType, inject_adapter_in_model
++
++        # Injected in place rather than wrapped in a PeftModel: the encoder stays the
++        # plain transformers model, so both routes run the one forward below.
++        inject_adapter_in_model(
++            LoraConfig(
++                r=lora_rank, lora_alpha=lora_alpha, lora_dropout=0.0,
++                target_modules=["q_proj", "v_proj"], bias="none",
++                task_type=TaskType.FEATURE_EXTRACTION,
++            ),
++            self.encoder,
++        )
++
++    def _encoder_scope(self) -> AbstractContextManager[None]:
++        """Frozen route: eval plus no_grad. Adapter route: leave the caller's mode."""
++        if self.encoder_frozen:
++            self.encoder.eval()
++            return torch.no_grad()
++        return nullcontext()
++
+     def forward(self, batch: dict[str, torch.Tensor], shuffle_context: bool = False):
+-        self.encoder.eval()
+-        with torch.no_grad():
++        with self._encoder_scope():
+             context = self.encoder(
+                 input_ids=batch["context_ids"],
+                 attention_mask=batch["context_mask"],
+@@ -112,31 +154,90 @@
+             config["width"], config["rank"], config["context_tokens"]
+         )
+         collator = ByteCollator(config["context_tokens"], config["option_tokens"])
+-    else:
++    elif config["encoder"] in ("hf", "lora"):
+         from transformers import AutoTokenizer
+ 
++        # "hf" leaves the pretrained weights frozen; "lora" adds trainable adapters to
++        # the same encoder, built from the same pinned revision and tokenizer. The
++        # adapter settings are read only for "lora", so a stray key can never turn the
++        # frozen route into a trainable one.
++        lora = (
++            {"lora_rank": config.get("lora_rank", 16),
++             "lora_alpha": config.get("lora_alpha", 32)}
++            if config["encoder"] == "lora" else {}
++        )
+         name = config["hf_model"]
+-        tokenizer = AutoTokenizer.from_pretrained(name)
++        revision = config.get("hf_revision")
++        tokenizer = AutoTokenizer.from_pretrained(name, revision=revision)
+         if tokenizer.pad_token_id is None:
+             tokenizer.pad_token = tokenizer.eos_token
+-        model = FrozenTransformerScorer(name, config["rank"])
++        model = FrozenTransformerScorer(name, config["rank"], revision, **lora)
+         collator = HuggingFaceCollator(
+             tokenizer, config["context_tokens"], config["option_tokens"]
+         )
++    else:
++        raise ValueError(f"unknown encoder {config['encoder']!r}")
+     return model.to(device), collator
+ 
+ 
+ def trainable_state(model: nn.Module) -> dict[str, torch.Tensor]:
+     return {
+-        name: parameter.detach().cpu()
++        name: parameter.detach().cpu().clone()
+         for name, parameter in model.named_parameters() if parameter.requires_grad
+     }
+ 
+ 
+ def load_checkpoint(path: str | Path, device: torch.device):
+-    payload = torch.load(path, map_location="cpu", weights_only=False)
++    """Load a checkpoint written by :func:`jevlike.train.main`.
++
++    The file must hold a plain ``{"config": {...}, "state_dict": {name: tensor}}``
++    payload. ``weights_only=True`` makes the loader refuse arbitrary pickled
++    objects, so an untrusted checkpoint fails here instead of executing code.
++    Checkpoints that carry extra Python objects must be re-saved in that plain
++    form; this loader never falls back to ``weights_only=False``.
++    """
++    try:
++        payload = torch.load(path, map_location="cpu", weights_only=True)
++    except Exception as error:  # unpicklable payload, corrupt or missing file
++        raise ValueError(
++            f"refusing to load {path}: not a plain-tensor checkpoint ({error})"
++        ) from error
++    if not isinstance(payload, dict):
++        raise ValueError(f"checkpoint {path} must be a dict")
++    for key in ("config", "state_dict"):
++        if not isinstance(payload.get(key), dict):
++            raise ValueError(f"checkpoint {path} needs a '{key}' dict")
++    if not all(
++        isinstance(name, str) and isinstance(weight, torch.Tensor)
++        for name, weight in payload["state_dict"].items()
++    ):
++        raise ValueError(f"checkpoint {path} state_dict must map names to tensors")
++    for key in ("encoder", "hf_model", "width", "rank", "context_tokens", "option_tokens"):
++        if key not in payload["config"]:
++            raise ValueError(f"checkpoint {path} config is missing '{key}'")
++    if payload["config"]["encoder"] == "lora":
++        revision = payload["config"].get("hf_revision")
++        if not isinstance(revision, str) or len(revision) != 40 or any(
++            char not in "0123456789abcdef" for char in revision
++        ):
++            raise ValueError("LoRA checkpoint requires a pinned 40-character hf_revision")
+     model, collator = make_system(payload["config"], device)
+-    missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
+-    if unexpected or any(not name.startswith("encoder.") for name in missing):
+-        raise ValueError(f"checkpoint mismatch: missing={missing}, unexpected={unexpected}")
++    try:
++        missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
++    except RuntimeError as error:
++        # Shape disagreement (e.g. adapter rank differs from the configured one) is a
++        # mismatch like any other, so it raises ValueError rather than a bare RuntimeError.
++        raise ValueError(f"checkpoint {path} does not fit the model: {error}") from error
++    # Checkpoints carry the trainable weights only, so the frozen encoder is expected
++    # to be absent and gets rebuilt from the hub. LoRA adapters are stored under
++    # "encoder." too, hence the test is "does this name train", not "is it the
++    # encoder": a stripped or corrupt adapter must not pass as a missing frozen block.
++    trainable = {
++        name for name, parameter in model.named_parameters() if parameter.requires_grad
++    }
++    required_missing = [name for name in missing if name in trainable]
++    if unexpected or required_missing:
++        raise ValueError(
++            f"checkpoint mismatch: missing={required_missing}, unexpected={unexpected}"
++        )
+     return model, collator, payload["config"]
+--- a/jevlike/train.py
++++ b/jevlike/train.py
+@@ -35,8 +35,9 @@
+     parser.add_argument("train")
+     parser.add_argument("--validation", required=True)
+     parser.add_argument("--output", default="runs/model.pt")
+-    parser.add_argument("--encoder", choices=("tiny", "hf"), default="tiny")
++    parser.add_argument("--encoder", choices=("tiny", "hf", "lora"), default="tiny")
+     parser.add_argument("--hf-model", default="Qwen/Qwen2.5-0.5B")
++    parser.add_argument("--hf-revision", default=None)
+     parser.add_argument("--width", type=int, default=64)
+     parser.add_argument("--rank", type=int, default=64)
+     parser.add_argument("--context-tokens", type=int, default=192)
+@@ -44,6 +45,9 @@
+     parser.add_argument("--epochs", type=int, default=8)
+     parser.add_argument("--batch-size", type=int, default=64)
+     parser.add_argument("--learning-rate", type=float, default=2e-3)
++    parser.add_argument("--head-learning-rate", type=float, default=5e-4)
++    parser.add_argument("--lora-rank", type=int, default=16)
++    parser.add_argument("--lora-alpha", type=int, default=32)
+     parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), default="auto")
+     parser.add_argument("--seed", type=int, default=7)
+     args = parser.parse_args()
+@@ -54,6 +58,11 @@
+         "width": args.width, "rank": args.rank,
+         "context_tokens": args.context_tokens, "option_tokens": args.option_tokens,
+     }
++    if args.hf_revision is not None:
++        config["hf_revision"] = args.hf_revision
++    if args.encoder == "lora":
++        config["lora_rank"] = args.lora_rank
++        config["lora_alpha"] = args.lora_alpha
+     model, collator = make_system(config, device)
+     train_loader = DataLoader(
+         JsonlDataset(args.train), batch_size=args.batch_size, shuffle=True,
+@@ -63,11 +72,33 @@
+         JsonlDataset(args.validation), batch_size=args.batch_size,
+         collate_fn=collator,
+     )
+-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+-    optimiser = torch.optim.AdamW(parameters, lr=args.learning_rate, weight_decay=1e-4)
++    scheduler = None
++    if args.encoder == "lora":
++        encoder_parameters = [p for p in model.encoder.parameters() if p.requires_grad]
++        head_parameters = [p for p in model.head.parameters() if p.requires_grad]
++        parameters = encoder_parameters + head_parameters
++        optimiser = torch.optim.AdamW(
++            [
++                {"params": encoder_parameters, "lr": args.learning_rate},
++                {"params": head_parameters, "lr": args.head_learning_rate},
++            ],
++            weight_decay=1e-4,
++        )
++        scheduler = torch.optim.lr_scheduler.OneCycleLR(
++            optimiser,
++            max_lr=[group["lr"] for group in optimiser.param_groups],
++            total_steps=args.epochs * len(train_loader),
++        )
++    else:
++        parameters = [p for p in model.parameters() if p.requires_grad]
++        optimiser = torch.optim.AdamW(parameters, lr=args.learning_rate, weight_decay=1e-4)
+     best_loss, best_state = float("inf"), None
+     for epoch in range(args.epochs):
+         model.train()
++        epoch_lrs = (
++            [group["lr"] for group in optimiser.param_groups]
++            if scheduler is not None else None
++        )
+         total, count = 0.0, 0
+         for host_batch in train_loader:
+             batch = move(host_batch, device)
+@@ -76,15 +107,21 @@
+             loss.backward()
+             torch.nn.utils.clip_grad_norm_(parameters, 1.0)
+             optimiser.step()
++            if scheduler is not None:
++                scheduler.step()
+             total += float(loss.detach()) * batch["labels"].numel()
+             count += batch["labels"].numel()
+         validation_loss = mean_loss(model, validation_loader, device)
+         if validation_loss < best_loss:
+             best_loss, best_state = validation_loss, trainable_state(model)
+-        print(json.dumps({
++        record = {
+             "epoch": epoch + 1, "train_nll": total / count,
+             "validation_nll": validation_loss, "device": str(device),
+-        }))
++        }
++        if epoch_lrs is not None:
++            record["adapter_lr"] = epoch_lrs[0]
++            record["head_lr"] = epoch_lrs[1]
++        print(json.dumps(record))
+     output = Path(args.output)
+     output.parent.mkdir(parents=True, exist_ok=True)
+     torch.save({"config": config, "state_dict": best_state}, output)

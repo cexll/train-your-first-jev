@@ -1,0 +1,33 @@
+[project]
+name = "train-your-first-jev"
+version = "0.1.0"
+description = "Teaching repository: train, evaluate, calibrate and reload a small Jev-like option scorer on CPU."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "train-your-first-jev contributors"}]
+dependencies = [
+  "jevlike",
+  "numpy>=1.26",
+  "peft>=0.13,<1",
+  "torch>=2.2",
+  "transformers>=4.51,<5",
+]
+
+[project.scripts]
+jev-course = "jev_course.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["jev_course*"]
+
+[tool.uv.sources]
+# Editable so that the vendored source under vendor/jevlike is what actually runs:
+# the lesson patches that source, and a copied install would silently keep the old
+# build until the next `uv sync`.
+jevlike = { path = "vendor/jevlike", editable = true }

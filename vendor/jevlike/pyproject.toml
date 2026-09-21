@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jevlike"
+version = "0.1.0"
+description = "Train a one-pass scorer over a variable list of text options."
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Minimal Labs"}]
+dependencies = ["numpy>=1.26", "torch>=2.2"]
+
+[project.optional-dependencies]
+transformers = ["transformers>=4.45"]
+
+[tool.setuptools.packages.find]
+include = ["jevlike*"]
+
+# Packaging deltas from the upstream pyproject.toml (see ../PROVENANCE.json):
+#   - dropped `readme` (no README is vendored here)
+#   - dropped the `dev` and `games` extras and the pytest configuration
+#   - dropped the jevlike-data/-train/-eval/-predict console scripts; the lessons
+#     call `python -m jevlike.<module>` instead
+#   - everything in [project] that remains (name, version, description,
+#     requires-python, license, license-files, authors, dependencies, the
+#     `transformers` extra) is upstream text, unchanged
